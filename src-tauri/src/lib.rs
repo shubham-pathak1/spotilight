@@ -3,7 +3,8 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, RunEvent, WindowEvent,
+    webview::{WebviewWindowBuilder},
+    Manager, RunEvent, WebviewUrl, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
@@ -49,17 +50,124 @@ fn do_monochrome_toggle(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
-        // -- Plugins --
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        // -- Setup: tray, shortcuts, window behavior --
-        .setup(|app| {
-            let window = app.get_webview_window("main").unwrap();
+    // Load the logo Base64 and scrub any newlines
+    let logo_base64 = include_str!("../logo_base64.txt")
+        .replace("\r", "")
+        .replace("\n", "")
+        .trim()
+        .to_string();
 
-            // Show the window once Spotify starts loading
-            // (window-state plugin restores position first since visible=false)
-            window.show().unwrap();
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .setup(move |app| {
+            // ── Bulletproof Inner Shell Script ───────────────────────
+            // No external font dependencies. Forced immediate injection.
+            // Braces are escaped as {{ and }} for the Rust format! macro.
+            let shell_script = format!(r#"
+                (function() {{
+                    const logoData = "{}";
+                    
+                    const inject = () => {{
+                        if (document.getElementById('spotilight-shell')) return;
+                        if (!document.documentElement) return;
+
+                        const style = document.createElement('style');
+                        style.id = 'spotilight-styles';
+                        style.innerHTML = `
+                            #spotilight-shell {{
+                                position: fixed;
+                                top: 0;
+                                left: 0;
+                                width: 100vw;
+                                height: 100vh;
+                                background: #000000;
+                                display: flex;
+                                flex-direction: column;
+                                justify-content: center;
+                                align-items: center;
+                                z-index: 2147483647;
+                                transition: opacity 0.8s ease-in-out;
+                                user-select: none;
+                                pointer-events: all;
+                            }}
+                            #spotilight-shell.fade-out {{
+                                opacity: 0;
+                                pointer-events: none;
+                            }}
+                            .shell-logo {{
+                                width: 110px;
+                                height: 110px;
+                                margin-bottom: 25px;
+                                animation: shell-bounce 3s ease-in-out infinite;
+                            }}
+                            .shell-text {{
+                                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                                color: #ffffff;
+                                font-size: 13px;
+                                letter-spacing: 3px;
+                                text-transform: lowercase;
+                                opacity: 0.6;
+                            }}
+                            @keyframes shell-bounce {{
+                                0%, 100% {{ transform: translateY(0); }}
+                                50% {{ transform: translateY(-12px); }}
+                            }}
+                        `;
+                        
+                        document.documentElement.appendChild(style);
+                        
+                        const shell = document.createElement('div');
+                        shell.id = 'spotilight-shell';
+                        shell.innerHTML = '<img src="data:image/png;base64,' + logoData + '" class="shell-logo"><div class="shell-text">loading...</div>';
+                        document.documentElement.appendChild(shell);
+
+                        let revealed = false;
+                        const reveal = () => {{
+                            if (revealed) return;
+                            revealed = true;
+                            shell.classList.add('fade-out');
+                            setTimeout(() => {{
+                                shell.remove();
+                                style.remove();
+                            }}, 1000);
+                        }};
+
+                        const checkReady = setInterval(() => {{
+                            if (document.querySelector('[data-testid="control-button-playpause"]') || 
+                                document.querySelector('.login-button') ||
+                                document.querySelector('#main')) {{
+                                clearInterval(checkReady);
+                                setTimeout(reveal, 1000);
+                            }}
+                        }}, 200);
+
+                        setTimeout(reveal, 10000);
+                    }};
+
+                    const interval = setInterval(() => {{
+                        if (document.documentElement) {{
+                            clearInterval(interval);
+                            inject();
+                        }}
+                    }}, 10);
+
+                    document.addEventListener('DOMContentLoaded', inject);
+                }})();
+            "#, logo_base64);
+
+            // ── Create Main Window Manually ──────────────────────────
+            let window_builder = WebviewWindowBuilder::new(
+                app,
+                "main",
+                WebviewUrl::External("https://open.spotify.com".parse().unwrap())
+            )
+            .title("Spotilight")
+            .inner_size(1100.0, 750.0)
+            .min_inner_size(800.0, 600.0)
+            .center()
+            .initialization_script(&shell_script);
+            
+            let _window = window_builder.build().expect("failed to build main window");
 
             // ── System Tray ──────────────────────────────────────────
 
@@ -142,7 +250,6 @@ pub fn run() {
 
             let shortcut_monochrome =
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyM);
-            let shortcut_fullscreen = Shortcut::new(None, Code::F11);
 
             // Media keys — no modifiers needed
             let shortcut_play_pause = Shortcut::new(None, Code::MediaPlayPause);
@@ -152,7 +259,6 @@ pub fn run() {
             app.global_shortcut().on_shortcuts(
                 [
                     shortcut_monochrome,
-                    shortcut_fullscreen,
                     shortcut_play_pause,
                     shortcut_next,
                     shortcut_prev,
@@ -165,9 +271,6 @@ pub fn run() {
 
                     if shortcut == &shortcut_monochrome {
                         do_monochrome_toggle(app);
-                    } else if shortcut == &shortcut_fullscreen {
-                        let is_fullscreen = window.is_fullscreen().unwrap_or(false);
-                        let _ = window.set_fullscreen(!is_fullscreen);
                     } else if shortcut == &shortcut_play_pause {
                         click_spotify_button(
                             &window,

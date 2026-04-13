@@ -7,21 +7,7 @@
     "frontendDist": "../src"
   },
   "app": {
-    "windows": [
-      {
-        "url": "https://open.spotify.com",
-        "title": "Spotilight",
-        "width": 1100,
-        "height": 750,
-        "minWidth": 800,
-        "minHeight": 600,
-        "visible": false,
-        "center": true,
-        "decorations": true,
-        "theme": "Dark",
-        "additionalBrowserArgs": "--js-flags=--max-old-space-size=256"
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
