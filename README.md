@@ -89,16 +89,6 @@ Output binaries will be in `src-tauri/target/release/bundle/`.
 
 ---
 
-## Roadmap
-
-- [ ] System tray now-playing info
-- [ ] Custom keyboard shortcuts
-- [ ] Multiple filter modes (monochrome, dim, high contrast, sepia) *maybe
-- [ ] Auto-launch on startup option
-- [ ] Mini player mode (compact window) *maybe
-
----
-
 ## Contributing
 
 PRs welcome. Keep it simple — the whole point of this project is to stay lean. Features that require touching Spotify's internals or adding heavy dependencies are out of scope.

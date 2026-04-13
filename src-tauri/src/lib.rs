@@ -7,11 +7,13 @@ use tauri::{
     Manager, RunEvent, WebviewUrl, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
-/// Shared state for monochrome filter toggle
-struct MonochromeState {
-    enabled: Mutex<bool>,
-    menu_item: Arc<CheckMenuItem<tauri::Wry>>,
+/// Shared state for UI toggles
+struct AppState {
+    monochrome_enabled: Mutex<bool>,
+    monochrome_item: Arc<CheckMenuItem<tauri::Wry>>,
+    autostart_item: Arc<CheckMenuItem<tauri::Wry>>,
 }
 
 /// Inject JavaScript into the Spotify webview to click a button by selector
@@ -41,11 +43,11 @@ fn toggle_monochrome(window: &tauri::WebviewWindow, enabled: bool) {
 /// Helper to flip monochrome state + sync tray checkmark
 fn do_monochrome_toggle(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        let state = app.state::<MonochromeState>();
-        let mut enabled = state.enabled.lock().unwrap();
+        let state = app.state::<AppState>();
+        let mut enabled = state.monochrome_enabled.lock().unwrap();
         *enabled = !*enabled;
         toggle_monochrome(&w, *enabled);
-        let _ = state.menu_item.set_checked(*enabled);
+        let _ = state.monochrome_item.set_checked(*enabled);
     }
 }
 
@@ -59,8 +61,10 @@ pub fn run() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec![])))
         .setup(move |app| {
             // ── Bulletproof Inner Shell Script ───────────────────────
+            // Using the Lava Lamp faces GIF!
             // No external font dependencies. Forced immediate injection.
             // Braces are escaped as {{ and }} for the Rust format! macro.
             let shell_script = format!(r#"
@@ -74,6 +78,8 @@ pub fn run() {
                         const style = document.createElement('style');
                         style.id = 'spotilight-styles';
                         style.innerHTML = `
+                            @import url('https://fonts.googleapis.com/css2?family=Silkscreen&display=swap');
+
                             #spotilight-shell {{
                                 position: fixed;
                                 top: 0;
@@ -95,22 +101,20 @@ pub fn run() {
                                 pointer-events: none;
                             }}
                             .shell-logo {{
-                                width: 110px;
-                                height: 110px;
+                                width: 220px;
+                                height: 220px;
                                 margin-bottom: 25px;
-                                animation: shell-bounce 3s ease-in-out infinite;
+                                filter: grayscale(100%) contrast(1.2);
+                                image-rendering: pixelated;
                             }}
                             .shell-text {{
-                                font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+                                font-family: 'Silkscreen', 'Courier New', monospace;
                                 color: #ffffff;
-                                font-size: 13px;
-                                letter-spacing: 3px;
-                                text-transform: lowercase;
-                                opacity: 0.6;
-                            }}
-                            @keyframes shell-bounce {{
-                                0%, 100% {{ transform: translateY(0); }}
-                                50% {{ transform: translateY(-12px); }}
+                                font-size: 16px;
+                                letter-spacing: 5px;
+                                text-transform: uppercase;
+                                font-weight: bold;
+                                opacity: 0.8;
                             }}
                         `;
                         
@@ -118,7 +122,7 @@ pub fn run() {
                         
                         const shell = document.createElement('div');
                         shell.id = 'spotilight-shell';
-                        shell.innerHTML = '<img src="data:image/png;base64,' + logoData + '" class="shell-logo"><div class="shell-text">loading...</div>';
+                        shell.innerHTML = '<img src="data:image/gif;base64,' + logoData + '" class="shell-logo"><div class="shell-text">just a moment...</div>';
                         document.documentElement.appendChild(shell);
 
                         let revealed = false;
@@ -137,7 +141,7 @@ pub fn run() {
                                 document.querySelector('.login-button') ||
                                 document.querySelector('#main')) {{
                                 clearInterval(checkReady);
-                                setTimeout(reveal, 1000);
+                                reveal();
                             }}
                         }}, 200);
 
@@ -180,6 +184,15 @@ pub fn run() {
                 false,
                 None::<&str>,
             )?;
+            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+            let autostart_item = CheckMenuItem::with_id(
+                app,
+                "autostart",
+                "Start with Windows",
+                true,
+                autostart_enabled,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit Spotilight", true, None::<&str>)?;
 
             let menu = Menu::with_items(
@@ -188,16 +201,19 @@ pub fn run() {
                     &show_hide,
                     &PredefinedMenuItem::separator(app)?,
                     &monochrome_item,
+                    &autostart_item,
                     &PredefinedMenuItem::separator(app)?,
                     &quit,
                 ],
             )?;
 
-            // Store monochrome state + menu item reference for syncing
+            // Store shared state for syncing
             let monochrome_arc = Arc::new(monochrome_item);
-            app.manage(MonochromeState {
-                enabled: Mutex::new(false),
-                menu_item: monochrome_arc,
+            let autostart_arc = Arc::new(autostart_item);
+            app.manage(AppState {
+                monochrome_enabled: Mutex::new(false),
+                monochrome_item: monochrome_arc,
+                autostart_item: autostart_arc,
             });
 
             let tray_icon = Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
@@ -220,6 +236,17 @@ pub fn run() {
                     }
                     "monochrome" => {
                         do_monochrome_toggle(app);
+                    }
+                    "autostart" => {
+                        let state = app.state::<AppState>();
+                        let manager = app.autolaunch();
+                        if manager.is_enabled().unwrap_or(false) {
+                            let _ = manager.disable();
+                            let _ = state.autostart_item.set_checked(false);
+                        } else {
+                            let _ = manager.enable();
+                            let _ = state.autostart_item.set_checked(true);
+                        }
                     }
                     "quit" => {
                         app.exit(0);
@@ -269,19 +296,19 @@ pub fn run() {
                         None => return,
                     };
 
-                    if shortcut == &shortcut_monochrome {
+                    if shortcut.id() == shortcut_monochrome.id() {
                         do_monochrome_toggle(app);
-                    } else if shortcut == &shortcut_play_pause {
+                    } else if shortcut.id() == shortcut_play_pause.id() {
                         click_spotify_button(
                             &window,
                             r#"[data-testid="control-button-playpause"]"#,
                         );
-                    } else if shortcut == &shortcut_next {
+                    } else if shortcut.id() == shortcut_next.id() {
                         click_spotify_button(
                             &window,
                             r#"[data-testid="control-button-skip-forward"]"#,
                         );
-                    } else if shortcut == &shortcut_prev {
+                    } else if shortcut.id() == shortcut_prev.id() {
                         click_spotify_button(
                             &window,
                             r#"[data-testid="control-button-skip-back"]"#,
